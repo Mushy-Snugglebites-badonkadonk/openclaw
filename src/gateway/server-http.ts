@@ -141,16 +141,32 @@ export type HooksRequestHandler = (req: IncomingMessage, res: ServerResponse) =>
 export function createHooksRequestHandler(
   opts: {
     getHooksConfig: () => HooksConfigResolved | null;
+    getTrustedProxies: () => string[];
     bindHost: string;
     port: number;
     logHooks: SubsystemLogger;
   } & HookDispatchers,
 ): HooksRequestHandler {
-  const { getHooksConfig, bindHost, port, logHooks, dispatchAgentHook, dispatchWakeHook } = opts;
+  const {
+    getHooksConfig,
+    getTrustedProxies,
+    bindHost,
+    port,
+    logHooks,
+    dispatchAgentHook,
+    dispatchWakeHook,
+  } = opts;
   const hookAuthFailures = new Map<string, HookAuthFailure>();
 
-  const resolveHookClientKey = (req: IncomingMessage): string => {
-    return req.socket?.remoteAddress?.trim() || "unknown";
+  const resolveHookClientKey = (req: IncomingMessage, trustedProxies: string[]): string => {
+    const remoteAddr = req.socket?.remoteAddress?.trim();
+    const resolvedIp = resolveGatewayClientIp({
+      remoteAddr,
+      forwardedFor: getHeader(req, "x-forwarded-for"),
+      realIp: getHeader(req, "x-real-ip"),
+      trustedProxies,
+    });
+    return resolvedIp ?? remoteAddr ?? "unknown";
   };
 
   const recordHookAuthFailure = (
@@ -201,7 +217,8 @@ export function createHooksRequestHandler(
     }
 
     const token = extractHookToken(req);
-    const clientKey = resolveHookClientKey(req);
+    const trustedProxies = getTrustedProxies();
+    const clientKey = resolveHookClientKey(req, trustedProxies);
     if (!safeEqualSecret(token, hooksConfig.token)) {
       const throttle = recordHookAuthFailure(clientKey, Date.now());
       if (throttle.throttled) {

@@ -108,6 +108,7 @@ export function createGatewayHooksRequestHandler(params: {
 
   return createHooksRequestHandler({
     getHooksConfig,
+    getTrustedProxies: () => loadConfig().gateway?.trustedProxies ?? [],
     bindHost,
     port,
     logHooks,

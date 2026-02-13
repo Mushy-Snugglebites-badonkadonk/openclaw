@@ -482,4 +482,94 @@ describe("gateway server hooks", () => {
       await server.close();
     }
   });
+
+  test("uses forwarded client IP buckets when request comes from trusted proxy", async () => {
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    testState.gatewayTrustedProxies = ["127.0.0.1"];
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    try {
+      const sendFailure = async (ip: string) =>
+        await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer wrong",
+            "x-forwarded-for": ip,
+          },
+          body: JSON.stringify({ text: "blocked" }),
+        });
+
+      for (let i = 0; i < 20; i++) {
+        const res = await sendFailure("203.0.113.10");
+        expect(res.status).toBe(401);
+      }
+      const throttledA = await sendFailure("203.0.113.10");
+      expect(throttledA.status).toBe(429);
+
+      const firstFailureB = await sendFailure("203.0.113.11");
+      expect(firstFailureB.status).toBe(401);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("ignores spoofed forwarded headers when proxy is untrusted", async () => {
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    testState.gatewayTrustedProxies = [];
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    try {
+      const sendFailure = async (ip: string) =>
+        await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer wrong",
+            "x-forwarded-for": ip,
+          },
+          body: JSON.stringify({ text: "blocked" }),
+        });
+
+      for (let i = 0; i < 20; i++) {
+        const res = await sendFailure("203.0.113.20");
+        expect(res.status).toBe(401);
+      }
+      const throttled = await sendFailure("203.0.113.21");
+      expect(throttled.status).toBe(429);
+    } finally {
+      await server.close();
+    }
+  });
+
+  test("keeps non-proxy throttling behavior unchanged", async () => {
+    testState.hooksConfig = { enabled: true, token: "hook-secret" };
+    const port = await getFreePort();
+    const server = await startGatewayServer(port);
+    try {
+      for (let i = 0; i < 20; i++) {
+        const res = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: "Bearer wrong",
+          },
+          body: JSON.stringify({ text: "blocked" }),
+        });
+        expect(res.status).toBe(401);
+      }
+
+      const throttled = await fetch(`http://127.0.0.1:${port}/hooks/wake`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: "Bearer wrong",
+        },
+        body: JSON.stringify({ text: "blocked" }),
+      });
+      expect(throttled.status).toBe(429);
+    } finally {
+      await server.close();
+    }
+  });
 });
