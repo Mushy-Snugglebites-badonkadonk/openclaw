@@ -5,7 +5,6 @@ import { describe, expect, test } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import type { ResolvedGatewayAuth } from "./auth.js";
-import type { GatewayWsClient } from "./server/ws-types.js";
 import { A2UI_PATH, CANVAS_HOST_PATH, CANVAS_WS_PATH } from "../canvas-host/a2ui.js";
 import { attachGatewayUpgradeHandler, createGatewayHttpServer } from "./server-http.js";
 
@@ -76,7 +75,7 @@ async function expectWsRejected(url: string, headers: Record<string, string>): P
 }
 
 describe("gateway canvas host auth", () => {
-  test("authorizes canvas/a2ui HTTP and canvas WS by matching an authenticated gateway ws client ip", async () => {
+  test("requires bearer auth or local direct access and rejects shared-IP fallback", async () => {
     const resolvedAuth: ResolvedGatewayAuth = {
       mode: "token",
       token: "test-token",
@@ -91,8 +90,6 @@ describe("gateway canvas host auth", () => {
         },
       },
       run: async () => {
-        const clients = new Set<GatewayWsClient>();
-
         const canvasWss = new WebSocketServer({ noServer: true });
         const canvasHost: CanvasHostHandler = {
           rootDir: "test",
@@ -124,7 +121,6 @@ describe("gateway canvas host auth", () => {
 
         const httpServer = createGatewayHttpServer({
           canvasHost,
-          clients,
           controlUiEnabled: false,
           controlUiBasePath: "/__control__",
           openAiChatCompletionsEnabled: false,
@@ -138,56 +134,53 @@ describe("gateway canvas host auth", () => {
           httpServer,
           wss,
           canvasHost,
-          clients,
           resolvedAuth,
         });
 
         const listener = await listen(httpServer);
         try {
-          const ipA = "203.0.113.10";
-          const ipB = "203.0.113.11";
+          const sharedIp = "203.0.113.10";
 
           const unauthCanvas = await fetch(
             `http://127.0.0.1:${listener.port}${CANVAS_HOST_PATH}/`,
             {
-              headers: { "x-forwarded-for": ipA },
+              headers: { "x-forwarded-for": sharedIp },
             },
           );
           expect(unauthCanvas.status).toBe(401);
 
-          const unauthA2ui = await fetch(`http://127.0.0.1:${listener.port}${A2UI_PATH}/`, {
-            headers: { "x-forwarded-for": ipA },
-          });
-          expect(unauthA2ui.status).toBe(401);
-
-          await expectWsRejected(`ws://127.0.0.1:${listener.port}${CANVAS_WS_PATH}`, {
-            "x-forwarded-for": ipA,
-          });
-
-          clients.add({
-            socket: {} as unknown as WebSocket,
-            connect: {} as never,
-            connId: "c1",
-            clientIp: ipA,
-          });
-
           const authCanvas = await fetch(`http://127.0.0.1:${listener.port}${CANVAS_HOST_PATH}/`, {
-            headers: { "x-forwarded-for": ipA },
+            headers: {
+              authorization: "Bearer test-token",
+              "x-forwarded-for": sharedIp,
+            },
           });
           expect(authCanvas.status).toBe(200);
           expect(await authCanvas.text()).toBe("ok");
 
-          const otherIpStillBlocked = await fetch(
+          const sharedIpUnauthCanvas = await fetch(
             `http://127.0.0.1:${listener.port}${CANVAS_HOST_PATH}/`,
             {
-              headers: { "x-forwarded-for": ipB },
+              headers: { "x-forwarded-for": sharedIp },
             },
           );
-          expect(otherIpStillBlocked.status).toBe(401);
+          expect(sharedIpUnauthCanvas.status).toBe(401);
+
+          const unauthA2ui = await fetch(`http://127.0.0.1:${listener.port}${A2UI_PATH}/`, {
+            headers: { "x-forwarded-for": sharedIp },
+          });
+          expect(unauthA2ui.status).toBe(401);
+
+          await expectWsRejected(`ws://127.0.0.1:${listener.port}${CANVAS_WS_PATH}`, {
+            "x-forwarded-for": sharedIp,
+          });
 
           await new Promise<void>((resolve, reject) => {
             const ws = new WebSocket(`ws://127.0.0.1:${listener.port}${CANVAS_WS_PATH}`, {
-              headers: { "x-forwarded-for": ipA },
+              headers: {
+                authorization: "Bearer test-token",
+                "x-forwarded-for": sharedIp,
+              },
             });
             const timer = setTimeout(() => reject(new Error("timeout")), 10_000);
             ws.once("open", () => {
@@ -200,6 +193,10 @@ describe("gateway canvas host auth", () => {
               reject(new Error(`unexpected response ${res.statusCode}`));
             });
             ws.once("error", reject);
+          });
+
+          await expectWsRejected(`ws://127.0.0.1:${listener.port}${CANVAS_WS_PATH}`, {
+            "x-forwarded-for": sharedIp,
           });
         } finally {
           await listener.close();
