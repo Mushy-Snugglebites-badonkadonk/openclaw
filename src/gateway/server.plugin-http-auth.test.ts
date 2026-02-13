@@ -38,6 +38,7 @@ function createRequest(params: {
   path: string;
   authorization?: string;
   method?: string;
+  remoteAddress?: string;
 }): IncomingMessage {
   const headers: Record<string, string> = {
     host: "localhost:18789",
@@ -49,7 +50,7 @@ function createRequest(params: {
     method: params.method ?? "GET",
     url: params.path,
     headers,
-    socket: { remoteAddress: "127.0.0.1" },
+    socket: { remoteAddress: params.remoteAddress ?? "127.0.0.1" },
   } as IncomingMessage;
 }
 
@@ -168,6 +169,67 @@ describe("gateway plugin HTTP auth boundary", () => {
         expect(unauthenticatedPublic.getBody()).toContain('"route":"public"');
 
         expect(handlePluginRequest).toHaveBeenCalledTimes(2);
+      },
+    });
+  });
+
+  test("applies control ui http auth for remote requests unless public mode is enabled", async () => {
+    const resolvedAuth: ResolvedGatewayAuth = {
+      mode: "token",
+      token: "test-token",
+      password: undefined,
+      allowTailscale: false,
+    };
+
+    await withTempConfig({
+      cfg: {
+        gateway: {
+          trustedProxies: [],
+          controlUi: {
+            public: false,
+          },
+        },
+      },
+      run: async () => {
+        const server = createGatewayHttpServer({
+          canvasHost: null,
+          clients: new Set(),
+          controlUiEnabled: true,
+          controlUiBasePath: "/control",
+          controlUiRoot: { kind: "missing" },
+          openAiChatCompletionsEnabled: false,
+          openResponsesEnabled: false,
+          handleHooksRequest: async () => false,
+          resolvedAuth,
+        });
+
+        const localhostUi = createResponse();
+        await dispatchRequest(
+          server,
+          createRequest({ path: "/control/", remoteAddress: "127.0.0.1" }),
+          localhostUi.res,
+        );
+        expect(localhostUi.res.statusCode).toBe(503);
+
+        const remoteNoToken = createResponse();
+        await dispatchRequest(
+          server,
+          createRequest({ path: "/control/", remoteAddress: "203.0.113.10" }),
+          remoteNoToken.res,
+        );
+        expect(remoteNoToken.res.statusCode).toBe(401);
+
+        const remoteWithToken = createResponse();
+        await dispatchRequest(
+          server,
+          createRequest({
+            path: "/control/",
+            remoteAddress: "203.0.113.10",
+            authorization: "Bearer test-token",
+          }),
+          remoteWithToken.res,
+        );
+        expect(remoteWithToken.res.statusCode).toBe(503);
       },
     });
   });

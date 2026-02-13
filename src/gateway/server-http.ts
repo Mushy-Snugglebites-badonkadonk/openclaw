@@ -100,6 +100,13 @@ function hasAuthorizedWsClientForIp(clients: Set<GatewayWsClient>, clientIp: str
   return false;
 }
 
+function isControlUiRequestPath(pathname: string, basePath: string): boolean {
+  if (!basePath) {
+    return true;
+  }
+  return pathname === basePath || pathname.startsWith(`${basePath}/`);
+}
+
 async function authorizeCanvasRequest(params: {
   req: IncomingMessage;
   auth: ResolvedGatewayAuth;
@@ -482,6 +489,22 @@ export function createGatewayHttpServer(opts: {
         }
       }
       if (controlUiEnabled) {
+        const controlUiIsPublic = configSnapshot.gateway?.controlUi?.public === true;
+        if (isControlUiRequestPath(requestPath, controlUiBasePath) && !controlUiIsPublic) {
+          if (!isLocalDirectRequest(req, trustedProxies)) {
+            const token = getBearerToken(req);
+            const authResult = await authorizeGatewayConnect({
+              auth: resolvedAuth,
+              connectAuth: token ? { token, password: token } : null,
+              req,
+              trustedProxies,
+            });
+            if (!authResult.ok) {
+              sendUnauthorized(res);
+              return;
+            }
+          }
+        }
         if (
           handleControlUiAvatarRequest(req, res, {
             basePath: controlUiBasePath,

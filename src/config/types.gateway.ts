@@ -72,6 +72,8 @@ export type GatewayControlUiConfig = {
   allowedOrigins?: string[];
   /** Allow token-only auth over insecure HTTP (default: false). */
   allowInsecureAuth?: boolean;
+  /** If true, serve Control UI publicly without gateway HTTP auth checks (default: false). */
+  public?: boolean;
   /** DANGEROUS: Disable device identity checks for the Control UI (default: false). */
   dangerouslyDisableDeviceAuth?: boolean;
 };
